@@ -1,0 +1,97 @@
+name: Build EXITIUM audio
+
+on:
+  workflow_dispatch:
+    inputs:
+      offset_sec:
+        description: "Startzeit (Sekunden) für die TTS-Phrase im Original-Track"
+        required: false
+        default: "3.5"
+      tts_text:
+        description: "TTS-Text"
+        required: false
+        default: "Welcome to EXITIUM"
+
+jobs:
+  build-audio:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y abcmidi timidity freepats ffmpeg python3-pip curl
+          python3 -m pip install --user gTTS
+
+      - name: Prepare workspace
+        run: mkdir -p audio
+
+      - name: Write ABC source (EXITIUM theme)
+        run: |
+          cat > audio/exitium-theme.abc <<'ABC'
+          X:1
+          T: Welcome to EXITIUM
+          M: 4/4
+          L: 1/8
+          Q: 1/4=96
+          K: Em
+          %%MIDI program 49
+          V:1
+          "Em" E2 G2 B2 A2 | "C" G2 E2 G2 c2 | "G" B2 d2 g2 f2 | "D" A2 F^F2 D2 A2 |
+          "Em" E2 G2 B2 e2 | "C" c2 B2 A2 G2 | "D" A2 F^F2 A2 d2 | "Em" e4 e4 |
+          "Em" e2 e2 g2 e2 | "G" b2 a2 g2 e2 | "D" f^f2 a2 d2 a2 | "C" g2 e2 c2 e2 |
+          "Em" e2 g2 b2 a2 | "G" b2 a2 g2 e2 | "D" f^f2 a2 d2 a2 | "Em" e4 e4 ||
+          ABC
+
+      - name: Render ABC -> MIDI
+        run: abcm2midi audio/exitium-theme.abc -o audio/exitium-theme.mid
+
+      - name: Render MIDI -> WAV (TiMidity++)
+        run: timidity audio/exitium-theme.mid -Ow -o audio/exitium-theme.wav
+
+      - name: Encode WAV -> MP3
+        run: ffmpeg -y -i audio/exitium-theme.wav -codec:a libmp3lame -b:a 192k audio/exitium-theme.mp3
+
+      - name: Download original Civitas track
+        run: curl -L "https://download.marcel-bochum.de/WelcometoCivitas.mp3" -o audio/original-civitas.mp3
+
+      - name: Generate TTS (Welcome to EXITIUM)
+        env:
+          TTS_TEXT: ${{ github.event.inputs.tts_text }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from gtts import gTTS
+          text = os.environ.get("TTS_TEXT", "Welcome to EXITIUM")
+          gTTS(text, lang="en").save("audio/tts-exitium.mp3")
+          PY
+          ffmpeg -y -i audio/tts-exitium.mp3 -ar 44100 -ac 1 audio/tts-exitium.wav
+
+      - name: Mix TTS into original
+        env:
+          OFFSET_SEC: ${{ github.event.inputs.offset_sec }}
+        run: |
+          python3 - <<'PY' > offset_ms.txt
+          import os
+          v = 3.5
+          try:
+            v = float(os.environ.get("OFFSET_SEC","3.5"))
+          except Exception:
+            pass
+          print(int(round(v*1000)))
+          PY
+          OFFSET_MS=$(cat offset_ms.txt)
+          ffmpeg -y -i audio/original-civitas.mp3 -i audio/tts-exitium.wav \
+            -filter_complex "[1:a]adelay=${OFFSET_MS}|${OFFSET_MS},volume=0.9[tts];[0:a][tts]amix=inputs=2:duration=longest:dropout_transition=250, dynaudnorm" \
+            -c:a libmp3lame -b:a 192k audio/welcome-to-exitium.mp3
+
+      - name: Upload audio artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: exitium-audio
+          path: |
+            audio/exitium-theme.mp3
+            audio/welcome-to-exitium.mp3
+          if-no-files-found: error
