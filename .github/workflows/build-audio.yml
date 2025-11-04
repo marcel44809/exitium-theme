@@ -46,7 +46,7 @@ jobs:
           ABC
 
       - name: Render ABC -> MIDI
-        run: abcm2midi audio/exitium-theme.abc -o audio/exitium-theme.mid
+        run: abc2midi audio/exitium-theme.abc -o audio/exitium-theme.mid
 
       - name: Render MIDI -> WAV (TiMidity++)
         run: timidity audio/exitium-theme.mid -Ow -o audio/exitium-theme.wav
